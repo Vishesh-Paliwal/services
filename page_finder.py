@@ -1,9 +1,13 @@
+import logging
 import os
 import re
 from pathlib import Path
 import fitz  # PyMuPDF
 
-from page_index import load_page_index, INDEX_DIR
+from page_index import load_page_index, load_page_index_by_name, INDEX_DIR
+from text_utils import normalize
+
+logger = logging.getLogger(__name__)
 
 # Cache: filename -> list of normalized page texts
 _pdf_cache: dict[str, list[str]] = {}
@@ -12,16 +16,6 @@ _index_cache: dict[str, dict[str, str]] = {}
 
 PDF_DIR = Path(os.environ.get("PDF_DIR", Path(__file__).parent / "books"))
 
-_NON_ASCII_RE = re.compile(r'[^\x20-\x7E]')
-_HYPHEN_BREAK_RE = re.compile(r'-\s+')
-
-
-def _normalize(text: str) -> str:
-    """Normalize text: rejoin hyphenated line breaks, strip non-ASCII, collapse whitespace."""
-    text = _HYPHEN_BREAK_RE.sub('', text)
-    text = _NON_ASCII_RE.sub('', text)
-    return " ".join(text.split())
-
 
 def _load_pdf(pdf_path: str) -> list[str]:
     """Extract and cache normalized text per page from a PDF."""
@@ -29,7 +23,7 @@ def _load_pdf(pdf_path: str) -> list[str]:
         return _pdf_cache[pdf_path]
 
     doc = fitz.open(pdf_path)
-    pages = [_normalize(page.get_text()) for page in doc]
+    pages = [normalize(page.get_text()) for page in doc]
     doc.close()
     _pdf_cache[pdf_path] = pages
     return pages
@@ -40,7 +34,7 @@ _PAGE_MARKER_RE = re.compile(r'PAGE\s+(\d+)')
 
 def _resolve_pdf_path(title: str) -> str | None:
     """Find a local PDF matching the grounding chunk title."""
-    if not title:
+    if not title or not PDF_DIR.exists():
         return None
     candidate = PDF_DIR / title
     if candidate.exists() and title.endswith(".pdf"):
@@ -56,32 +50,38 @@ def _resolve_pdf_path(title: str) -> str | None:
 
 
 def _resolve_page_index(title: str) -> dict[str, str] | None:
-    """Find and load a page index JSON matching the grounding chunk title."""
+    """Find and load a page index JSON matching the grounding chunk title.
+
+    Checks local cache, then local filesystem, then GCS.
+    """
     if not title:
         return None
 
-    # Derive index filename from title
-    base = title.replace("_enriched.txt", "").replace(".pdf", "")
-    index_path = INDEX_DIR / f"{base}_pages.json"
+    cache_key = title
+    if cache_key in _index_cache:
+        return _index_cache[cache_key]
 
-    if not index_path.exists():
-        # Fuzzy match
+    # Try direct load by display name (checks local then GCS)
+    index = load_page_index_by_name(title)
+    if index:
+        _index_cache[cache_key] = index
+        return index
+
+    # Fuzzy match on local files
+    base = title.replace("_enriched.txt", "").replace(".pdf", "")
+    if INDEX_DIR.exists():
         for f in INDEX_DIR.iterdir():
             if f.suffix == ".json" and base.lower() in f.stem.lower():
-                index_path = f
-                break
-        else:
-            return None
+                index = load_page_index(f)
+                _index_cache[cache_key] = index
+                return index
 
-    cache_key = str(index_path)
-    if cache_key not in _index_cache:
-        _index_cache[cache_key] = load_page_index(index_path)
-    return _index_cache[cache_key]
+    return None
 
 
 def _find_page_in_index(chunk_text: str, page_index: dict[str, str]) -> int | None:
     """Find page number by matching chunk text against page index."""
-    full = _normalize(chunk_text)
+    full = normalize(chunk_text)
 
     for length in (120, 60, 40):
         snippet = full[:length]
@@ -100,7 +100,7 @@ def find_page(chunk_text: str, pdf_path: str) -> int | None:
         return None
 
     pages = _load_pdf(pdf_path)
-    full = _normalize(chunk_text)
+    full = normalize(chunk_text)
 
     for length in (120, 60, 40):
         snippet = full[:length]

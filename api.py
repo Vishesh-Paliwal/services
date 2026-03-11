@@ -120,21 +120,28 @@ def api_query(req: QueryRequest):
 
         log_response(req.question, req.mode, response)
 
-        # Format citations
-        if enhancer_meta and enhancer_meta.get("decomposed"):
-            cited_text = response.text or ""
-            references = []
-        else:
-            cited_text, refs = format_citations(response)
-            references = [
-                ReferenceItem(
-                    index=r["index"],
-                    title=r["title"],
-                    uri=r.get("uri", ""),
-                    page_info=r.get("page_info"),
-                )
-                for r in refs
-            ]
+        answer_text = response.text or ""
+
+        # Format citations — failures here must not block the answer
+        cited_text = answer_text
+        references = []
+        try:
+            if enhancer_meta and enhancer_meta.get("decomposed"):
+                cited_text = answer_text
+                references = []
+            else:
+                cited_text, refs = format_citations(response)
+                references = [
+                    ReferenceItem(
+                        index=r["index"],
+                        title=r["title"],
+                        uri=r.get("uri", ""),
+                        page_info=r.get("page_info"),
+                    )
+                    for r in refs
+                ]
+        except Exception:
+            logger.exception("Citation formatting failed, returning answer without citations")
 
         # Token usage
         usage = getattr(response, "usage_metadata", None)
@@ -147,7 +154,7 @@ def api_query(req: QueryRequest):
             }
 
         return QueryResponse(
-            answer=response.text or "",
+            answer=answer_text,
             cited_answer=cited_text,
             references=references,
             token_usage=token_usage,
