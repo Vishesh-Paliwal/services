@@ -11,6 +11,9 @@ DEFAULT_TOP_K = int(os.environ.get("FILE_SEARCH_TOP_K", "10"))
 PORTKEY_API_KEY = os.environ.get("PORTKEY_API_KEY")
 PORTKEY_MODEL = os.environ.get("PORTKEY_MODEL", "@gcp-prod-gemini-key/gemini-2.5-flash")
 
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
 
 def get_client() -> genai.Client:
     key = os.environ.get("GOOGLE_API_KEY")

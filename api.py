@@ -10,11 +10,13 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from config import get_client, DEFAULT_TOP_K, MODEL
+from auth import get_current_user
+from chat_routes import router as chat_router
 from store_manager import (
     create_store, list_stores, delete_store,
     upload_book_from_bytes, upload_enriched_text, list_documents,
@@ -50,6 +52,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Bioreactor RAG API", version="1.0.0", lifespan=lifespan)
+
+app.include_router(chat_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,7 +119,7 @@ class ProcessRequest(BaseModel):
 
 
 @app.post("/api/query", response_model=QueryResponse)
-def api_query(req: QueryRequest):
+def api_query(req: QueryRequest, user: dict = Depends(get_current_user)):
     client = _get_client()
     enhancer_meta = None
 
@@ -183,7 +187,7 @@ def api_query(req: QueryRequest):
 
 
 @app.get("/api/stores", response_model=list[StoreItem])
-def api_list_stores():
+def api_list_stores(user: dict = Depends(get_current_user)):
     client = _get_client()
     try:
         stores = list_stores(client)
@@ -199,7 +203,7 @@ def api_list_stores():
 
 
 @app.post("/api/stores", response_model=StoreItem)
-def api_create_store(req: StoreCreateRequest):
+def api_create_store(req: StoreCreateRequest, user: dict = Depends(get_current_user)):
     client = _get_client()
     try:
         store = create_store(client, req.display_name)
@@ -212,7 +216,7 @@ def api_create_store(req: StoreCreateRequest):
 
 
 @app.delete("/api/stores/{store_name:path}")
-def api_delete_store(store_name: str):
+def api_delete_store(store_name: str, user: dict = Depends(get_current_user)):
     client = _get_client()
     try:
         delete_store(client, store_name)
@@ -222,7 +226,7 @@ def api_delete_store(store_name: str):
 
 
 @app.get("/api/stores/{store_name:path}/documents", response_model=list[DocumentItem])
-def api_list_documents(store_name: str):
+def api_list_documents(store_name: str, user: dict = Depends(get_current_user)):
     client = _get_client()
     try:
         docs = list_documents(client, store_name)
@@ -241,7 +245,7 @@ def api_list_documents(store_name: str):
 
 
 @app.post("/api/get-upload-url")
-def api_get_upload_url(req: UploadUrlRequest, request: Request):
+def api_get_upload_url(req: UploadUrlRequest, request: Request, user: dict = Depends(get_current_user)):
     """Generate a resumable GCS upload URL for the frontend."""
     try:
         origin = request.headers.get("origin", "")
@@ -253,7 +257,7 @@ def api_get_upload_url(req: UploadUrlRequest, request: Request):
 
 
 @app.post("/api/process")
-def api_process(req: ProcessRequest):
+def api_process(req: ProcessRequest, user: dict = Depends(get_current_user)):
     """Process a PDF already uploaded to GCS. Enriches and indexes it."""
     client = _get_client()
     filename = req.filename
@@ -322,6 +326,7 @@ def api_upload(
     file: UploadFile = File(...),
     store_name: str = Form(...),
     enrich: str = Form("true"),
+    user: dict = Depends(get_current_user),
 ):
     """Upload a PDF to a store. Optionally enriches with visual descriptions.
     Also builds a page index for page number lookups."""
