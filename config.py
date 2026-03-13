@@ -12,8 +12,8 @@ PORTKEY_API_KEY = os.environ.get("PORTKEY_API_KEY")
 PORTKEY_MODEL = os.environ.get("PORTKEY_MODEL", "@gcp-prod-gemini-key/gemini-2.5-flash")
 
 
-def get_client(api_key: str | None = None) -> genai.Client:
-    key = api_key or os.environ.get("GOOGLE_API_KEY")
+def get_client() -> genai.Client:
+    key = os.environ.get("GOOGLE_API_KEY")
     if not key:
         raise ValueError("GOOGLE_API_KEY is required")
     return genai.Client(api_key=key)

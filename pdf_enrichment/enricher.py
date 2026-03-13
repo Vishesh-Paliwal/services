@@ -176,3 +176,14 @@ def enrich_pdf_from_bytes(
         return enrich_pdf(client, tmp_path, source_filename, model, progress_callback)
     finally:
         os.unlink(tmp_path)
+
+
+def enrich_pdf_from_local(
+    client,
+    local_path: str,
+    source_filename: str,
+    model: str = "gemini-2.5-flash",
+    progress_callback=None,
+) -> tuple[str, dict]:
+    """Enrich a PDF already on the local filesystem (e.g. downloaded from GCS)."""
+    return enrich_pdf(client, local_path, source_filename, model, progress_callback)

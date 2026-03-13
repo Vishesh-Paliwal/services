@@ -8,7 +8,7 @@ from .prompts import SCIENTIFIC_IMAGE_PROMPT
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_WORKERS = 20
+DEFAULT_WORKERS = 5
 
 
 def describe_page_image(
@@ -41,7 +41,10 @@ def _describe_one(client, pdf_path, page_num, model):
     img_bytes = render_page_as_image(pdf_path, page_num)
     try:
         desc = describe_page_image(client, img_bytes, model)
-        logger.debug("Page %d described (%d chars)", page_num + 1, len(desc))
+        if desc is None:
+            logger.warning("Page %d: Gemini returned empty response", page_num + 1)
+            return page_num, "[Description failed: empty response]"
+        logger.info("Page %d described (%d chars)", page_num + 1, len(desc))
         return page_num, desc
     except Exception as e:
         logger.warning("Page %d description failed: %s", page_num + 1, e)

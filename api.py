@@ -10,7 +10,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -22,10 +22,12 @@ from store_manager import (
 from query_engine import query, query_smart, query_rewrite
 from citations import format_citations, format_references_markdown
 from page_finder import find_pages_for_chunks
-from page_index import save_page_index_from_bytes
-from pdf_enrichment.enricher import enrich_pdf_from_bytes
+from page_index import save_page_index_from_bytes, save_page_index
+from pdf_enrichment.enricher import enrich_pdf_from_bytes, enrich_pdf_from_local
+from gcs_upload import generate_upload_url, download_from_gcs, delete_from_gcs, save_enrichment_to_gcs, load_enrichment_from_gcs, delete_enrichment_from_gcs
 from response_logger import log_response
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # --- Shared client ---
@@ -96,6 +98,17 @@ class StoreItem(BaseModel):
 class DocumentItem(BaseModel):
     name: str
     display_name: str
+
+
+class UploadUrlRequest(BaseModel):
+    filename: str
+
+
+class ProcessRequest(BaseModel):
+    gcs_path: str
+    store_name: str
+    filename: str
+    enrich: bool = True
 
 
 # ─── Query endpoints ───
@@ -224,7 +237,84 @@ def api_list_documents(store_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── Upload endpoint ───
+# ─── GCS Upload Flow (for large files) ───
+
+
+@app.post("/api/get-upload-url")
+def api_get_upload_url(req: UploadUrlRequest, request: Request):
+    """Generate a resumable GCS upload URL for the frontend."""
+    try:
+        origin = request.headers.get("origin", "")
+        result = generate_upload_url(req.filename, origin=origin)
+        return result
+    except Exception as e:
+        logger.exception("Failed to generate upload URL")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/process")
+def api_process(req: ProcessRequest):
+    """Process a PDF already uploaded to GCS. Enriches and indexes it."""
+    client = _get_client()
+    filename = req.filename
+
+    # Download once from GCS, reuse local file for all steps
+    local_path = download_from_gcs(req.gcs_path)
+    try:
+        if req.enrich:
+            # Check for cached enrichment from a previous failed upload attempt
+            cached = load_enrichment_from_gcs(filename)
+            if cached:
+                logger.info("Using cached enrichment for %s", filename)
+                enriched_text = cached
+                stats = {"cached": True}
+            else:
+                enriched_text, stats = enrich_pdf_from_local(
+                    client, local_path, filename,
+                )
+                # Cache to GCS before attempting upload — survives failures
+                save_enrichment_to_gcs(filename, enriched_text)
+
+            index_path = save_page_index(local_path, filename, enriched_text=enriched_text)
+            logger.info("Page index saved (with enriched text): %s", index_path)
+
+            enriched_name = filename.replace(".pdf", "_enriched.txt")
+            fresh_client = get_client()
+            upload_enriched_text(fresh_client, req.store_name, enriched_text, enriched_name)
+
+            # Upload succeeded — clean up cache
+            delete_enrichment_from_gcs(filename)
+            return {
+                "status": "uploaded",
+                "filename": enriched_name,
+                "enriched": True,
+                "stats": stats,
+                "page_index": str(index_path),
+            }
+        else:
+            index_path = save_page_index(local_path, filename)
+            logger.info("Page index saved (PDF only): %s", index_path)
+
+            from store_manager import upload_book
+            upload_book(client, req.store_name, local_path, display_name=filename)
+            return {
+                "status": "uploaded",
+                "filename": filename,
+                "enriched": False,
+                "page_index": str(index_path),
+            }
+
+    except Exception as e:
+        logger.exception("Processing failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up local temp file and GCS upload
+        if os.path.exists(local_path):
+            os.unlink(local_path)
+        delete_from_gcs(req.gcs_path)
+
+
+# ─── Upload endpoint (legacy, for small files < 32MB) ───
 
 
 @app.post("/api/upload")
