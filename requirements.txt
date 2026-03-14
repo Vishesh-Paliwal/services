@@ -8,3 +8,4 @@ uvicorn>=0.34.0
 python-multipart>=0.0.18
 reportlab>=4.0
 supabase>=2.0.0
+supermemory>=0.1.0

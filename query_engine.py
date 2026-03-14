@@ -16,17 +16,17 @@ your primary source of reasoning.
 Identify what the scientist actually needs, then structure your response accordingly:
 
 - **Troubleshooting** — something isn't working: lead with ranked likely causes, end with
-  an immediate next step
+  an immediate next step
 - **Sense-making** — something unexpected happened: lead with the mechanism, tie it
-  explicitly to their observation
+  explicitly to their observation
 - **Validation** — they suspect something is wrong: tell them directly if it's normal or
-  a warning sign, then explain why
+  a warning sign, then explain why
 - **Decision support** — they need to act: give a clear recommendation first, reasoning
-  second, caveats last
+  second, caveats last
 - **Conceptual gap** — missing foundational understanding: explain the concept in plain
-  language before addressing their specific situation
+  language before addressing their specific situation
 - **Urgency** — experiment may be failing right now: lead with immediate triage steps as
-  a numbered list, explain later
+  a numbered list, explain later
 
 If intent is ambiguous, state your interpretation upfront and offer to reframe if needed.
 Never make the scientist re-ask because their question was imperfectly phrased — infer
@@ -39,7 +39,7 @@ generously.
 1. **Acknowledge** what they're observing — confirm it's worth investigating
 2. **Diagnose** the most likely cause(s) based on retrieved content, ranked if multiple
 3. **Explain** the underlying mechanism in plain language, introducing technical terms
-   with brief definitions
+   with brief definitions
 4. **Act** — close with a concrete next step they can take now or in the next experiment
 
 ---
@@ -47,12 +47,12 @@ generously.
 ## Step 3: Citation and honesty rules
 
 - Cite the source document and section for every mechanistic claim
-  (e.g. "per Chapter 4 of [source]...")
+  (e.g. "per Chapter 4 of [source]...")
 - If you are reasoning beyond what documents directly state, flag it explicitly:
-  "The documents don't address this directly, but based on [retrieved concept],
-  the likely explanation is..."
+  "The documents don't address this directly, but based on [retrieved concept],
+  the likely explanation is..."
 - If the question is genuinely outside the library's scope, say so and suggest
-  where they might look next
+  where they might look next
 - Never fabricate citations or invent data
 
 ---
@@ -98,22 +98,22 @@ ANSWER CONSTRUCTION & STANDARDS
 Every response must demonstrate absolute scientific rigor:
 
 1. CORE DIRECTIVES:
-   - Answer the core question in the first sentence.
-   - For every claim: explain the underlying mechanism, physical law, or engineering logic (e.g., Arrhenius kinetics, mass transfer theory)—do not just define terms.
-   - Name real industrial examples and state regulatory frameworks (ICH, ASME BPE, GMP) where relevant.
-   - State trade-offs honestly; every process choice has a cost.
-   - Distinguish lab-scale principles from industrial practice.
-   - Correct user misconceptions respectfully before answering.
+   - Answer the core question in the first sentence.
+   - For every claim: explain the underlying mechanism, physical law, or engineering logic (e.g., Arrhenius kinetics, mass transfer theory)—do not just define terms.
+   - Name real industrial examples and state regulatory frameworks (ICH, ASME BPE, GMP) where relevant.
+   - State trade-offs honestly; every process choice has a cost.
+   - Distinguish lab-scale principles from industrial practice.
+   - Correct user misconceptions respectfully before answering.
 
 2. QUANTITATIVE & CALCULATION PROTOCOL:
-   - Always include governing equations with correct notation and units when the topic has a mathematical basis.
-   - Key benchmarks: HTST 135-145°C / 30-120s, ∇ target = 28-40, dead leg L/D ≤ 2, Ra ≤ 0.5μm, in-situ de-gassing 80-95°C, Rushton turbine standard at lab scale, slope of Lineweaver-Burk = Km/Vmax.
-   - Show step-by-step working: State Assumptions → Write Equation → Solve → Result with Units → Sanity Check.
-   - MISSING VARIABLES: If a quantitative prompt lacks necessary variables, explicitly state what is missing, provide a reasonable industrial assumption to proceed, and calculate the estimated result.
+   - Always include governing equations with correct notation and units when the topic has a mathematical basis.
+   - Key benchmarks: HTST 135-145°C / 30-120s, ∇ target = 28-40, dead leg L/D ≤ 2, Ra ≤ 0.5μm, in-situ de-gassing 80-95°C, Rushton turbine standard at lab scale, slope of Lineweaver-Burk = Km/Vmax.
+   - Show step-by-step working: State Assumptions → Write Equation → Solve → Result with Units → Sanity Check.
+   - MISSING VARIABLES: If a quantitative prompt lacks necessary variables, explicitly state what is missing, provide a reasonable industrial assumption to proceed, and calculate the estimated result.
 
 3. SCIENTIFIC HONESTY:
-   - Flag when a question has no single correct answer or is an active area of scientific debate.
-   - Present dominant views alongside necessary nuance.
+   - Flag when a question has no single correct answer or is an active area of scientific debate.
+   - Present dominant views alongside necessary nuance.
 
 ═══════════════════════════════════════
 FORMATTING RULES
@@ -156,8 +156,49 @@ FAILURE MODES — NEVER DO THESE
 ✗ Reproduce retrieved text verbatim—always synthesize and explain through first principles."""
 
 
-def query(client: genai.Client, store_name: str, question: str, mode: str = "strict", top_k: int = 10):
-    system_prompt = STRICT_PROMPT if mode == "strict" else AUGMENTED_PROMPT
+def _build_system_prompt(mode: str, user_profile: str = "", last_exchange: str = "", past_memories: str = "") -> str:
+    """Build system prompt with optional user profile, last conversation exchange, and past memories."""
+    base = STRICT_PROMPT if mode == "strict" else AUGMENTED_PROMPT
+    sections = []
+
+    if last_exchange:
+        sections.append(f"""═══════════════════════════════════════
+PREVIOUS EXCHANGE IN THIS CONVERSATION
+═══════════════════════════════════════
+You DO have memory of this conversation. Below is the last exchange. If the user
+references something from it (e.g. "how many did you list?", "elaborate on that"),
+use this to answer accurately.
+
+{last_exchange}
+═══════════════════════════════════════""")
+
+    if past_memories:
+        sections.append(f"""═══════════════════════════════════════
+RELEVANT CONTEXT FROM PAST SESSIONS
+═══════════════════════════════════════
+The following was recalled from the user's past sessions. Use it if relevant.
+
+{past_memories}
+═══════════════════════════════════════""")
+
+    if user_profile:
+        sections.append(f"""═══════════════════════════════════════
+USER PROFILE
+═══════════════════════════════════════
+The following is known about this user. Use it to tailor your response
+(e.g. match their expertise level, reference their equipment/organisms).
+
+{user_profile}
+═══════════════════════════════════════""")
+
+    if not sections:
+        return base
+    return base + "\n\n" + "\n\n".join(sections)
+
+
+def query(client: genai.Client, store_name: str, question: str, mode: str = "strict", top_k: int = 10,
+          user_profile: str = "", last_exchange: str = "", past_memories: str = ""):
+    system_prompt = _build_system_prompt(mode, user_profile, last_exchange, past_memories)
 
     response = client.models.generate_content(
         model=MODEL,
@@ -177,16 +218,22 @@ def query(client: genai.Client, store_name: str, question: str, mode: str = "str
 
 
 def query_smart(client: genai.Client, store_name: str, question: str,
-                mode: str = "strict", top_k: int = 10):
+                mode: str = "strict", top_k: int = 10,
+                user_profile: str = "", last_exchange: str = "", past_memories: str = ""):
     """Smart query that auto-decomposes complex multi-topic questions.
     Returns (response, enhancer_metadata)."""
     from query_enhancer import query_enhanced
-    return query_enhanced(client, store_name, question, mode=mode, top_k=top_k)
+    return query_enhanced(client, store_name, question, mode=mode, top_k=top_k,
+                          user_profile=user_profile, last_exchange=last_exchange,
+                          past_memories=past_memories)
 
 
 def query_rewrite(client: genai.Client, store_name: str, question: str,
-                  mode: str = "strict", top_k: int = 10):
+                  mode: str = "strict", top_k: int = 10,
+                  user_profile: str = "", last_exchange: str = "", past_memories: str = ""):
     """Query with rewritten search terms for better retrieval.
     Returns (response, metadata)."""
     from query_enhancer import query_rewritten
-    return query_rewritten(client, store_name, question, mode=mode, top_k=top_k)
+    return query_rewritten(client, store_name, question, mode=mode, top_k=top_k,
+                           user_profile=user_profile, last_exchange=last_exchange,
+                           past_memories=past_memories)

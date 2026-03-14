@@ -14,6 +14,8 @@ PORTKEY_MODEL = os.environ.get("PORTKEY_MODEL", "@gcp-prod-gemini-key/gemini-2.5
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
+SUPERMEMORY_API_KEY = os.environ.get("SUPERMEMORY_API_KEY", "")
+
 
 def get_client() -> genai.Client:
     key = os.environ.get("GOOGLE_API_KEY")

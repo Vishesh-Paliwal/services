@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from config import get_client, DEFAULT_TOP_K, MODEL
 from auth import get_current_user
 from chat_routes import router as chat_router
+from feedback_routes import router as feedback_router
 from store_manager import (
     create_store, list_stores, delete_store,
     upload_book_from_bytes, upload_enriched_text, list_documents,
@@ -28,6 +29,10 @@ from page_index import save_page_index_from_bytes, save_page_index
 from pdf_enrichment.enricher import enrich_pdf_from_bytes, enrich_pdf_from_local
 from gcs_upload import generate_upload_url, download_from_gcs, delete_from_gcs, save_enrichment_to_gcs, load_enrichment_from_gcs, delete_enrichment_from_gcs
 from response_logger import log_response
+from memory import resolve_question, get_user_profile, store_conversation
+from auth import get_supabase
+from query_trace import QueryTrace
+from followups import generate_follow_ups
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -54,6 +59,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Bioreactor RAG API", version="1.0.0", lifespan=lifespan)
 
 app.include_router(chat_router)
+app.include_router(feedback_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,6 +79,7 @@ class QueryRequest(BaseModel):
     mode: str = "augmented"
     top_k: int = DEFAULT_TOP_K
     smart: bool = True
+    conversation_id: str | None = None
 
 
 class ReferenceItem(BaseModel):
@@ -88,6 +95,7 @@ class QueryResponse(BaseModel):
     references: list[ReferenceItem]
     token_usage: dict
     enhancer_meta: dict | None = None
+    follow_ups: list[str] = []
 
 
 class StoreCreateRequest(BaseModel):
@@ -122,18 +130,104 @@ class ProcessRequest(BaseModel):
 def api_query(req: QueryRequest, user: dict = Depends(get_current_user)):
     client = _get_client()
     enhancer_meta = None
+    trace = QueryTrace(user["user_id"], req.question)
 
     try:
+        # Step 1: Fetch conversation history from Supabase for follow-up resolution
+        trace.start_step("fetch_conversation")
+        conversation_messages = []
+        if req.conversation_id:
+            try:
+                sb = get_supabase()
+                result = (
+                    sb.table("messages")
+                    .select("role, content")
+                    .eq("conversation_id", req.conversation_id)
+                    .order("created_at", desc=False)
+                    .execute()
+                )
+                conversation_messages = result.data or []
+            except Exception:
+                logger.warning("Failed to fetch conversation history")
+        trace.step("fetch_conversation", {
+            "conversation_id": req.conversation_id,
+            "message_count": len(conversation_messages),
+            "messages": conversation_messages,
+        })
+
+        # Step 2: Resolve follow-up into standalone question
+        trace.start_step("resolve_question")
+        resolved_question = resolve_question(
+            client, req.question, conversation_messages,
+            user_id=user["user_id"],
+        )
+        trace.step("resolve_question", {
+            "original": req.question,
+            "resolved": resolved_question,
+            "changed": resolved_question != req.question,
+        })
+
+        # Step 3: Get user profile for personalization
+        trace.start_step("get_user_profile")
+        user_profile = get_user_profile(user["user_id"])
+        trace.step("get_user_profile", {
+            "profile_length": len(user_profile),
+            "profile": user_profile,
+        })
+
+        # Step 4: Build last_exchange from conversation history (last Q&A pair)
+        last_exchange = ""
+        if conversation_messages:
+            # Find the last user+assistant pair
+            last_user = ""
+            last_assistant = ""
+            for msg in reversed(conversation_messages):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "assistant" and not last_assistant:
+                    last_assistant = content
+                elif role == "user" and not last_user:
+                    last_user = content
+                if last_user and last_assistant:
+                    break
+            if last_user and last_assistant:
+                last_exchange = f"User: {last_user}\n\nAssistant: {last_assistant}"
+
+        # Step 5: Get past memories from Supermemory for cross-session context
+        trace.start_step("search_memories")
+        from memory import _search_memories
+        past_memories = _search_memories(user["user_id"], resolved_question)
+        trace.step("search_memories", {
+            "past_memories": past_memories,
+        })
+
+        trace.set("last_exchange", last_exchange)
+
+        # Step 6: Query with resolved question + user profile + last exchange + past memories
+        trace.start_step("rag_query")
+        trace.set("query_params", {
+            "mode": req.mode,
+            "smart": req.smart,
+            "top_k": req.top_k,
+            "store_name": req.store_name,
+        })
         if req.smart:
             response, enhancer_meta = query_smart(
-                client, req.store_name, req.question,
+                client, req.store_name, resolved_question,
                 mode=req.mode, top_k=req.top_k,
+                user_profile=user_profile,
+                last_exchange=last_exchange,
+                past_memories=past_memories,
             )
         else:
             response = query(
-                client, req.store_name, req.question,
+                client, req.store_name, resolved_question,
                 mode=req.mode, top_k=req.top_k,
+                user_profile=user_profile,
+                last_exchange=last_exchange,
+                past_memories=past_memories,
             )
+        trace.end_step("rag_query")
 
         log_response(req.question, req.mode, response)
 
@@ -170,12 +264,35 @@ def api_query(req: QueryRequest, user: dict = Depends(get_current_user)):
                 "total_tokens": getattr(usage, "total_token_count", 0) or 0,
             }
 
+        # Generate follow-up suggestions
+        follow_ups = []
+        try:
+            follow_ups = generate_follow_ups(client, req.question, answer_text)
+        except Exception:
+            logger.warning("Follow-up generation failed")
+
+        # Store conversation in Supermemory for future context (fire-and-forget)
+        try:
+            store_conversation(user["user_id"], req.question, answer_text)
+        except Exception:
+            logger.warning("Failed to store conversation in Supermemory")
+
+        # Save trace
+        trace.set("enhancer_meta", enhancer_meta)
+        trace.set("answer", answer_text)
+        trace.set("cited_answer", cited_text)
+        trace.set("references", [r.model_dump() for r in references] if references else [])
+        trace.set("token_usage", token_usage)
+        trace.set("follow_ups", follow_ups)
+        trace.save()
+
         return QueryResponse(
             answer=answer_text,
             cited_answer=cited_text,
             references=references,
             token_usage=token_usage,
             enhancer_meta=enhancer_meta,
+            follow_ups=follow_ups,
         )
 
     except Exception as e:

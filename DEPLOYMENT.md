@@ -58,6 +58,7 @@ echo -n "YOUR_GOOGLE_API_KEY" | gcloud secrets create GOOGLE_API_KEY --data-file
 echo -n "YOUR_PORTKEY_API_KEY" | gcloud secrets create PORTKEY_API_KEY --data-file=-
 echo -n "https://YOUR_PROJECT.supabase.co" | gcloud secrets create SUPABASE_URL --data-file=-
 echo -n "YOUR_SUPABASE_SERVICE_ROLE_KEY" | gcloud secrets create SUPABASE_SERVICE_KEY --data-file=-
+echo -n "YOUR_SUPERMEMORY_API_KEY" | gcloud secrets create SUPERMEMORY_API_KEY --data-file=-
 ```
 
 Replace the placeholder values with actual keys.
@@ -83,6 +84,10 @@ gcloud secrets add-iam-policy-binding SUPABASE_SERVICE_KEY --member="serviceAcco
 ```
 
 ```bash
+gcloud secrets add-iam-policy-binding SUPERMEMORY_API_KEY --member="serviceAccount:746208330214-compute@developer.gserviceaccount.com" --role="roles/secretmanager.secretAccessor"
+```
+
+```bash
 gcloud storage buckets add-iam-policy-binding gs://project-688a4c78-5d5b-45b3-b5d-page-indexes --member="serviceAccount:746208330214-compute@developer.gserviceaccount.com" --role="roles/storage.objectUser"
 ```
 
@@ -93,7 +98,7 @@ gcloud storage buckets add-iam-policy-binding gs://project-688a4c78-5d5b-45b3-b5
 This is the only command needed for deploying or redeploying:
 
 ```bash
-gcloud run deploy bioreactor-rag --source . --region us-central1 --allow-unauthenticated --memory 2Gi --timeout 900 --concurrency 2 --set-env-vars "GEMINI_MODEL=gemini-2.5-flash,FILE_SEARCH_TOP_K=10,GCS_PAGE_INDEX_BUCKET=project-688a4c78-5d5b-45b3-b5d-page-indexes,GCS_UPLOAD_BUCKET=project-688a4c78-5d5b-45b3-b5d-pdf-uploads" --set-secrets "GOOGLE_API_KEY=GOOGLE_API_KEY:latest,PORTKEY_API_KEY=PORTKEY_API_KEY:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_KEY=SUPABASE_SERVICE_KEY:latest"
+gcloud run deploy bioreactor-rag --source . --region us-central1 --allow-unauthenticated --memory 2Gi --timeout 900 --concurrency 2 --set-env-vars "GEMINI_MODEL=gemini-2.5-flash,FILE_SEARCH_TOP_K=10,GCS_PAGE_INDEX_BUCKET=project-688a4c78-5d5b-45b3-b5d-page-indexes,GCS_UPLOAD_BUCKET=project-688a4c78-5d5b-45b3-b5d-pdf-uploads,GCS_TRACE_BUCKET=project-688a4c78-5d5b-45b3-b5d-page-indexes,GCS_TRACE_PREFIX=traces/" --set-secrets "GOOGLE_API_KEY=GOOGLE_API_KEY:latest,PORTKEY_API_KEY=PORTKEY_API_KEY:latest,SUPABASE_URL=SUPABASE_URL:latest,SUPABASE_SERVICE_KEY=SUPABASE_SERVICE_KEY:latest,SUPERMEMORY_API_KEY=SUPERMEMORY_API_KEY:latest"
 ```
 
 Run this from the `bioreactor-rag-backend` directory. Cloud Build auto-detects Python via `Procfile` + `requirements.txt`.
@@ -136,6 +141,9 @@ Expected: `{"status":"ok","model":"gemini-2.5-flash"}`
 | `PORTKEY_API_KEY` | Secret Manager | Portkey API key |
 | `SUPABASE_URL` | Secret Manager | Supabase project URL |
 | `SUPABASE_SERVICE_KEY` | Secret Manager | Supabase service role key |
+| `SUPERMEMORY_API_KEY` | Secret Manager | Supermemory API key |
+| `GCS_TRACE_BUCKET` | env var | GCS bucket for query traces (reuses page-indexes bucket) |
+| `GCS_TRACE_PREFIX` | env var | GCS prefix for traces (default: `traces/`) |
 
 ---
 

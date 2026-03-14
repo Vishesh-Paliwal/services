@@ -82,7 +82,8 @@ SYNTHESIS_PROMPT_TEMPLATE = """You have retrieved the following content from tex
 
 
 def rewrite_query(client: genai.Client, question: str) -> str:
-    """Rewrite a user question into an optimized search query for better retrieval."""
+    """Rewrite a user question into an optimized search query for better retrieval.
+    Question should already be resolved (standalone) before reaching here."""
     try:
         response = client.models.generate_content(
             model=MODEL,
@@ -102,18 +103,18 @@ def rewrite_query(client: genai.Client, question: str) -> str:
 
 
 def query_rewritten(client: genai.Client, store_name: str, question: str,
-                    mode: str = "strict", top_k: int = 10) -> tuple[object, dict]:
+                    mode: str = "strict", top_k: int = 10, user_profile: str = "",
+                    last_exchange: str = "", past_memories: str = "") -> tuple[object, dict]:
     """
     Rewrite the query for better retrieval, then run normal single-query search.
-    The rewritten query is used for retrieval, but the original question is what
-    the model answers.
+    Question should already be resolved (standalone) before reaching here.
 
     Returns (response, metadata) where metadata has rewrite info.
     """
-    from query_engine import STRICT_PROMPT, AUGMENTED_PROMPT
+    from query_engine import _build_system_prompt
 
     rewritten = rewrite_query(client, question)
-    system_prompt = STRICT_PROMPT if mode == "strict" else AUGMENTED_PROMPT
+    system_prompt = _build_system_prompt(mode, user_profile, last_exchange, past_memories)
 
     # Use rewritten query as the content (for better retrieval) but prepend
     # the original question so the model knows what to actually answer
@@ -143,7 +144,8 @@ def query_rewritten(client: genai.Client, store_name: str, question: str,
 
 
 def classify_query(client: genai.Client, question: str) -> dict:
-    """Classify whether a question needs decomposition. Returns dict with 'decompose' and optionally 'sub_queries'."""
+    """Classify whether a question needs decomposition.
+    Question should already be resolved (standalone) before reaching here."""
     try:
         response = client.models.generate_content(
             model=MODEL,
@@ -262,9 +264,11 @@ def synthesize_with_chunks(client: genai.Client, question: str, chunks: list[dic
 
 def query_enhanced(client: genai.Client, store_name: str, question: str,
                    mode: str = "strict", top_k: int = 10,
-                   force_decompose: bool = False) -> tuple[object, dict]:
+                   force_decompose: bool = False, user_profile: str = "",
+                   last_exchange: str = "", past_memories: str = "") -> tuple[object, dict]:
     """
     Enhanced query with optional multi-query decomposition.
+    Question should already be resolved (standalone) before reaching here.
 
     Returns (response, enhancer_metadata) where metadata contains:
     - decomposed: bool
@@ -272,7 +276,7 @@ def query_enhanced(client: genai.Client, store_name: str, question: str,
     - total_chunks: int
     - deduped_chunks: int
     """
-    from query_engine import query, STRICT_PROMPT, AUGMENTED_PROMPT
+    from query_engine import query, _build_system_prompt
 
     # Step 1: Classify
     if force_decompose:
@@ -282,7 +286,8 @@ def query_enhanced(client: genai.Client, store_name: str, question: str,
 
     if not classification.get("decompose"):
         # Simple query — pass through to existing query engine
-        response = query(client, store_name, question, mode=mode, top_k=top_k)
+        response = query(client, store_name, question, mode=mode, top_k=top_k,
+                         user_profile=user_profile, last_exchange=last_exchange, past_memories=past_memories)
         return response, {"decomposed": False, "sub_queries": None, "total_chunks": 0, "deduped_chunks": 0}
 
     # Step 2: Multi-query retrieval
@@ -296,11 +301,12 @@ def query_enhanced(client: genai.Client, store_name: str, question: str,
     if not chunks:
         # Fallback: if multi-query returned nothing, try single query
         logger.warning("Multi-query returned no chunks, falling back to single query")
-        response = query(client, store_name, question, mode=mode, top_k=top_k)
+        response = query(client, store_name, question, mode=mode, top_k=top_k,
+                         user_profile=user_profile, last_exchange=last_exchange, past_memories=past_memories)
         return response, {"decomposed": True, "sub_queries": sub_queries, "total_chunks": 0, "deduped_chunks": 0, "fallback": True}
 
     # Step 3: Synthesize with all chunks
-    system_prompt = STRICT_PROMPT if mode == "strict" else AUGMENTED_PROMPT
+    system_prompt = _build_system_prompt(mode, user_profile, last_exchange, past_memories)
     response = synthesize_with_chunks(client, question, chunks, system_prompt)
 
     metadata = {
